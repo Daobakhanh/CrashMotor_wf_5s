@@ -17,7 +17,7 @@
 #define SimSerial Serial2
 #define GpsSerial Serial1
 
-const String MQTT_HOST = "broker.emqx.io";
+const String MQTT_HOST = "noibinhyen.ddns.net";
 const int MQTT_PORT = 1883;
 const String MQTT_USER = "";
 const String MQTT_PASSWORD = "";
@@ -142,7 +142,8 @@ bool handleDeviceStatus()
 		{
 			// fall
 			//Serial.println("Fall");
-			dataToSend.status = FALL;
+			//dataToSend.status = FALL;
+			deviceStatus = FALL;
 			time1 = millis();
 			time2 = millis();
 			updateData();
@@ -184,7 +185,7 @@ bool handleDeviceStatus()
 				}
 				delay(100);
 			}
-			deviceStatus = checkFallandCrash();
+			deviceStatus = NONE;
 			updateData();
 			return true;
 		}
@@ -404,7 +405,7 @@ void initMQTT()
 bool checkSosAndAntiTheft(uint8_t sosPin, unsigned int timeOut)
 {
 	timeOut = 2000;
-	if (digitalRead(sosPin) == HIGH) // sosPin = 0
+	if (digitalRead(sosPin) == HIGH) // sosPin = 1
 	{
 		int count = 1;
 		int timePress = 3000; // 3s

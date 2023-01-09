@@ -23,11 +23,11 @@ DeviceStatus antiTheft(Location last, Location current)
 {
 	double Distance;
 	Distance = calculateDistance(last, current);
-	if (Distance > 50.0)
+	if (Distance > 500.0)
 	{
 		return LOST2;
 	}
-	if (Distance > 10.0)
+	if (Distance > 1000.0)
 	{
 		return LOST1;
 	}
