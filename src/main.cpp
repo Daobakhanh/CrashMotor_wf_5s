@@ -132,7 +132,7 @@ bool handleDeviceStatus()
 		{
 			if (checkFallandCrash() == CRASH)
 			{
-				// //Serial.println("check");
+				// Serial.println("check");
 				deviceStatus = CRASH;
 				return false;
 			}
@@ -141,7 +141,7 @@ bool handleDeviceStatus()
 		if (checkFallandCrash() == FALL)
 		{
 			// fall
-			//Serial.println("Fall");
+			Serial.println("Fall");
 			//dataToSend.status = FALL;
 			deviceStatus = FALL;
 			time1 = millis();
@@ -151,7 +151,7 @@ bool handleDeviceStatus()
 			{
 				if ((millis() - time1) > 500U)
 				{
-					//Serial.println("Buzzer");
+					Serial.println("Buzzer");
 					digitalWrite(BUZZER, statusBuzzer);
 					statusBuzzer = !statusBuzzer;
 					time1 = millis();
@@ -166,7 +166,7 @@ bool handleDeviceStatus()
 						deviceStatus = NONE;
 						dataToSend.status = NONE;
 						updateData();
-						//Serial.println("NONE");
+						Serial.println("NONE");
 						return true;
 					}
 				}
@@ -282,8 +282,8 @@ bool readDataFromSim()
 				checklengthDataReciver = 0;
 				doneGetData = 1;
 				dataSubReciver = dataSimReciver.substring(dataSimReciver.indexOf("{"), dataSimReciver.indexOf("{") + lengthDataReciver);
-				//Serial.println(dataSubReciver);
-				// //Serial.println(dataSimReciver);
+				Serial.println(dataSubReciver);
+				// Serial.println(dataSimReciver);
 				dataForReceive = DataForReceive::fromJson(dataSubReciver);
 				if (dataForReceive.deviceId == deviceId)
 				{
@@ -298,7 +298,7 @@ bool readDataFromSim()
 						statusAntiTheft = dataForReceive.antiTheft;
 
 						// Serial.print("Status Anti Theft = ");
-						// //Serial.println(statusAntiTheft);
+						// Serial.println(statusAntiTheft);
 					}
 					if (statusAntiTheft == true)
 					{
@@ -328,7 +328,7 @@ bool readDataFromSim()
 			{
 				lengthDataReciver = splittedString[5].toInt();
 			}
-			//Serial.println(dataSimReciver);
+			Serial.println(dataSimReciver);
 			if ((dataSimReciver.length() - dataSimReciver.indexOf("{")) < lengthDataReciver)
 			{
 				checklengthDataReciver = 1;
@@ -338,8 +338,8 @@ bool readDataFromSim()
 			{
 				doneGetData = 1;
 				dataSubReciver = dataSimReciver.substring(dataSimReciver.indexOf("{"), dataSimReciver.indexOf("{") + lengthDataReciver);
-				//Serial.println(dataSubReciver);
-				//Serial.println(dataSimReciver);
+				Serial.println(dataSubReciver);
+				Serial.println(dataSimReciver);
 				dataForReceive = DataForReceive::fromJson(dataSubReciver);
 				if (dataForReceive.deviceId == deviceId)
 				{
@@ -353,7 +353,7 @@ bool readDataFromSim()
 						}
 						statusAntiTheft = dataForReceive.antiTheft;
 						Serial.print("Status Anti Theft = ");
-						//Serial.println(statusAntiTheft);
+						Serial.println(statusAntiTheft);
 					}
 					if (statusAntiTheft == true)
 					{
@@ -381,7 +381,7 @@ bool readDataFromSim()
 		}
 		if (checklengthDataReciver == 0)
 		{
-			//Serial.println(dataSimReciver);
+			Serial.println(dataSimReciver);
 			dataSimReciver = "";
 		}
 	}
@@ -414,7 +414,7 @@ bool checkSosAndAntiTheft(uint8_t sosPin, unsigned int timeOut)
 		{
 			if ((millis() - now > timePress) && (digitalRead(sosPin) == HIGH))
 			{
-				//Serial.println("SOS");
+				Serial.println("SOS");
 				deviceStatus = SOS;
 				dataToSend.antiTheft = statusAntiTheft;
 				dataToSend.status = deviceStatus; // SOS
@@ -446,7 +446,7 @@ bool checkSosAndAntiTheft(uint8_t sosPin, unsigned int timeOut)
 						updateData();
 						Serial.print("AntiTheft ");
 						statusAntiTheft = !statusAntiTheft;
-						//Serial.println(statusAntiTheft);
+						Serial.println(statusAntiTheft);
 						for (int i = 0; i < 6; i++)
 						{
 							statusBuzzer = !statusBuzzer;
@@ -512,7 +512,7 @@ void getGPS()
 	currentLocation.lng = gps.location.lng();
 	dataToSend.location[0] = currentLocation.lat;
 	dataToSend.location[1] = currentLocation.lng;
-	// //Serial.println(currentLocation.lat,8);
-	// //Serial.println(currentLocation.lng,8);
+	// Serial.println(currentLocation.lat,8);
+	// Serial.println(currentLocation.lng,8);
 	delete (gpsStream);
 }
