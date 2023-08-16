@@ -13,7 +13,8 @@ String DataToSend::toJson()
     doc["location"] = jsonLocation;
     doc["status"] = status;
     doc["antiTheft"] = antiTheft;
-    // Serialize the JSON document
+    doc["battery"] = battery;
+    doc["isConnected"] = isConnected;   // Serialize the JSON document
     serializeJson(doc, result);
     return result;
 }

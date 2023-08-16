@@ -21,6 +21,8 @@ struct DataToSend
     std::vector<double> location = {0,0};
     DeviceStatus status = NONE;
     bool antiTheft = false;
+    bool isConnected = false;
+    int battery = 0;
     String toJson();
 };
 

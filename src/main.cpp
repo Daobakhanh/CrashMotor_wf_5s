@@ -4,28 +4,50 @@
 #include <vector>
 #include "mcd.h"
 #include "mcd1.h"
+#include <Wire.h>
 #include <TinyGPSPlus.h>
 #include <Base64.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
 
-#define BUTTON_SOS 26
-#define BUZZER 32
+#define SSID "PP"
+#define PASSWORD "password"
+// #define USE_SIM
+#define USE_WIFI
+
+#define BUTTON_SOS 18
+#define BUZZER 5
 #define DATA_UPDATE_CYCLE_DEFAUlT 30000
+#define DATA_UPDATE_CYCLE_SOS 5000
 #define SYSTEM_CYCLE_DEFAULT 100000
 #define TIME_CHECK_FALL 2000
-#define RX1 2
-#define TX1 15
+#define RX1 23
+#define TX1 22
+#define RX2 4
+#define TX2 2
 #define SimSerial Serial2
 #define GpsSerial Serial1
+#define BATTERY_PIN 15
+#define POWER_CONNECT_PIN 16
 
-const String MQTT_HOST = "noibinhyen.ddns.net";
-const int MQTT_PORT = 1883;
+const String MQTT_HOST = "nby.ddns.net";
+const int MQTT_PORT = 63001;
 const String MQTT_USER = "";
 const String MQTT_PASSWORD = "";
 const String PUB_LOCATION_TOPIC = "/noibinhyen/mcd/location";
 const String SUB_UPDATE_TOPIC = "/noibinhyen/mcd/update";
+const char* MQTT_PUB_TOPIC = "/noibinhyen/mcd/location";
+const char* MQTT_SUB_TOPIC = "/noibinhyen/mcd/update";
 
-bool readDataFromSim();
+WiFiClient espClient;
+PubSubClient client(espClient);
 
+unsigned long lastMsg = 0;
+#define MSG_BUFFER_SIZE (50)
+char msg[MSG_BUFFER_SIZE];
+int value = 0;
+
+uint32_t countBaterry = 0;
 TinyGPSPlus gps;
 DataToSend dataToSend;
 DataForReceive dataForReceive;
@@ -42,82 +64,188 @@ bool tempFall = false;
 bool checklengthDataReciver = 0;
 int lengthDataReciver;
 bool doneGetData = 1;
-String dataSimReciver = "";
+String dataReceiver = "";
+bool isDataReceiver = false;
 String deviceId = WiFi.macAddress();
 bool statusBuzzer = HIGH;
 
 unsigned long now;
 unsigned long last;
 unsigned long timeCheckAntiTheft;
-int dataUpdateCycle = DATA_UPDATE_CYCLE_DEFAUlT; //time update data
+uint32_t timeCheckCrash;
+int dataUpdateCycle = DATA_UPDATE_CYCLE_DEFAUlT; // time update data
 int systemCycle = SYSTEM_CYCLE_DEFAULT;			 // 60000ms = 60s = 1'
+bool isPress;
+uint32_t countPress = 0;
+uint32_t timeUpdateData = 0;
+uint32_t timeBuzzerToggle = 0;
 
+void setupPin();
 void getGPS();
-
 bool checkSosAndAntiTheft(uint8_t sosPin, unsigned int timeOut = 2000U);
-
 void initMQTT();
+void callback(char* topic, byte* payload, unsigned int length);
+void reconnect();
+void pubDataUseWifi(String data);
+void handlelDataReceiver();
+void getBattery();
 
-void setup()
-{
-	Serial.begin(9600);
-	GpsSerial.begin(9600, SERIAL_8N1, TX1, RX1);
-	SimSerial.begin(9600);
-	pinMode(BUTTON_SOS, INPUT_PULLDOWN);
-	pinMode(BUZZER, OUTPUT);
+void IRAM_ATTR handleButton();
 
-	digitalWrite(BUZZER, statusBuzzer);
-	dataToSend.deviceId = WiFi.macAddress();
-	now = millis();
-	last = millis();
+void setup() {
+	setupPin();
 	mpuInit();
 	initMQTT();
+	now = millis();
+	last = millis();
 	timeCheckAntiTheft = millis();
+	// deviceStatus = CRASH;
 }
 
-void loop()
-{
-	while (readDataFromSim() == true)
-		;
-	delay(10);
-
-	checkSosAndAntiTheft(BUTTON_SOS); // kiểm tra vào chức năng SOS hoặc chống trộm
-
-	if (statusAntiTheft == true && now - timeCheckAntiTheft > 3000)
+void loop() {
+	client.loop();
+	// handel Data Reciver
+	if (isDataReceiver == true)
 	{
-		deviceStatus = antiTheft(savedLocation, currentLocation); // chống trộm
-		timeCheckAntiTheft = now;
+		handlelDataReceiver();
+		isDataReceiver = false;
 	}
-
+	// reconnect
+	if (!client.connected())
+	{
+		reconnect();
+	}
+	// check button
+	if (isPress == true)
+	{
+		if (deviceStatus == NONE || deviceStatus == CRASH)
+		{
+			checkSosAndAntiTheft(BUTTON_SOS); // kiểm tra vào chức năng SOS hoặc chống trộm
+			isPress = false;
+		} else
+		{
+			countPress = 0;
+			isPress = false;
+		}
+		timeUpdateData = true;
+	}
+	// CHECK location
+	if (deviceStatus == NONE || deviceStatus == LOST1)
+	{
+		if (statusAntiTheft == true && now - timeCheckAntiTheft > 3000)
+		{
+			deviceStatus = antiTheft(savedLocation, currentLocation); // chống trộm
+			timeCheckAntiTheft = now;
+		}
+	}
+	// check đổ
 	if (deviceStatus == NONE)
 	{
-		deviceStatus = checkFallandCrash();
+		if (now - timeCheckCrash > 20)
+		{
+			deviceStatus = checkFallandCrash();
+			timeCheckCrash = now;
+		}
 	}
 
-	handleDeviceStatus();
+	if (dataToSend.status != deviceStatus)
+	{
+		if (deviceStatus != NONE)
+		{
+			Serial.println("Update time data");
+			statusWarining = true;
+			// updateData();
+			dataUpdateCycle = DATA_UPDATE_CYCLE_SOS;
+			dataToSend.status = deviceStatus;
+		} else
+		{
+			dataUpdateCycle = DATA_UPDATE_CYCLE_DEFAUlT;
+			digitalWrite(BUZZER, HIGH);
+		}
+		// updateData();
+	}
 
-	if (statusWarining == true)
+	if (deviceStatus == CRASH && millis() - timeBuzzerToggle > 500)
 	{
-		dataUpdateCycle = DATA_UPDATE_CYCLE_DEFAUlT / 6;
+		Serial.println("Warning");
+		statusBuzzer = !statusBuzzer;
+		digitalWrite(BUZZER, statusBuzzer);
+		timeBuzzerToggle = millis();
 	}
-	else
+
+	if (now - timeUpdateData > dataUpdateCycle)
 	{
-		dataUpdateCycle = DATA_UPDATE_CYCLE_DEFAUlT;
-	}
-	if ((now - last) % dataUpdateCycle <= 20)
-	{
+		countBaterry++;
+		getGPS();
 		updateData();
+		timeUpdateData = now;
 	}
-	delay(10);
+	// delay(10);
 	now = millis();
 	if (now - last > systemCycle)
 	{
 		last = now;
 	}
 }
+void setupPin() {
+	Wire.begin(32, 33);
+	Serial.begin(9600);
+	GpsSerial.begin(9600, SERIAL_8N1, TX1, RX1);
+	// pinMode(BUTTON_SOS, INPUT_PULLDOWN);
 
-bool handleDeviceStatus()
-{
+	pinMode(BUTTON_SOS, INPUT_PULLDOWN);
+
+	pinMode(BUZZER, OUTPUT);
+	pinMode(POWER_CONNECT_PIN, INPUT);
+	pinMode(BATTERY_PIN, INPUT);
+	attachInterrupt(digitalPinToInterrupt(BUTTON_SOS), handleButton, RISING);
+	getBattery();
+	dataToSend.deviceId = WiFi.macAddress();
+	digitalWrite(BUZZER, statusBuzzer);
+}
+
+void IRAM_ATTR handleButton() {
+	countPress++;
+	isPress = true;
+}
+
+void callback(char* topic, byte* payload, unsigned int length) {
+	Serial.print("Message arrived [");
+	Serial.print(topic);
+	Serial.print("] ");
+	dataReceiver = "";
+	for (int i = 0; i < length; i++)
+	{
+		// Serial.print((char)payload[i]);
+		dataReceiver += (char)payload[i];
+	}
+	//
+	isDataReceiver = true;
+	Serial.println(dataReceiver);
+}
+
+void reconnect() {
+	while (!client.connected())
+	{
+		String clientId = "Client";
+		// Attempt to connect
+		if (client.connect(clientId.c_str()))
+		{
+			Serial.print("Reconnect ");
+			// client.publish(MQTT_PUB_TOPIC, "hello world");
+			client.subscribe(MQTT_SUB_TOPIC);
+		} else
+		{
+			Serial.print("failed, rc=");
+			Serial.print(client.state());
+			Serial.println(" try again in 5 seconds");
+			// Wait 5 seconds before retrying
+			delay(5000);
+		}
+	}
+}
+
+bool handleDeviceStatus() {
 	bool updateLocation = false;
 	unsigned long time1 = millis();
 	unsigned long time2 = millis();
@@ -126,96 +254,14 @@ bool handleDeviceStatus()
 	case NONE:
 		// skip
 		break;
-	case FALL:
-		// coi keu + sms sau 5s
-		while (millis() - time1 < TIME_CHECK_FALL)
-		{
-			if (checkFallandCrash() == CRASH)
-			{
-				// Serial.println("check");
-				deviceStatus = CRASH;
-				return false;
-			}
-			delay(10);
-		}
-		if (checkFallandCrash() == FALL)
-		{
-			// fall
-			Serial.println("Fall");
-			//dataToSend.status = FALL;
-			deviceStatus = FALL;
-			time1 = millis();
-			time2 = millis();
-			updateData();
-			while ((millis() - time2) < 10000U)
-			{
-				if ((millis() - time1) > 500U)
-				{
-					Serial.println("Buzzer");
-					digitalWrite(BUZZER, statusBuzzer);
-					statusBuzzer = !statusBuzzer;
-					time1 = millis();
-				}
-				if (checkFallandCrash() != FALL)
-				{
-					delay(1000);
-					if (checkFallandCrash() != FALL)
-					{
-						statusBuzzer = HIGH;
-						digitalWrite(BUZZER, statusBuzzer);
-						deviceStatus = NONE;
-						dataToSend.status = NONE;
-						updateData();
-						Serial.println("NONE");
-						return true;
-					}
-				}
-				delay(100);
-			}
-			updateData();
-			statusBuzzer = HIGH;
-			digitalWrite(BUZZER, statusBuzzer);
-			time1 = millis();
-			while (checkFallandCrash() == FALL)
-			{
-				if (millis() - time1 > dataUpdateCycle)
-				{
-					updateData();
-					time1 = millis();
-				}
-				delay(100);
-			}
-			deviceStatus = NONE;
-			updateData();
-			return true;
-		}
-		break;
 	case CRASH:
 		dataToSend.status = CRASH;
-		updateData();
-		// dataToSend.status = NONE;
-		statusWarining = true;
-		while (statusWarining == true)
-		{
-			if ((millis() - time1) > 500U)
-			{
-				digitalWrite(BUZZER, statusBuzzer);
-				statusBuzzer = !statusBuzzer;
-				time1 = millis();
-			}
-			if ((millis() - time2) > DATA_UPDATE_CYCLE_DEFAUlT / 5)
-			{
-				updateData();
-				time2 = millis();
-			}
-			while (readDataFromSim() == true)
-				;
-			delay(10);
-		}
-		statusBuzzer = HIGH;
-		digitalWrite(BUZZER, statusBuzzer);
-		deviceStatus = NONE;
-		dataToSend.status = NONE;
+		deviceStatus = CRASH;
+		break;
+	case SOS:
+		dataToSend.status = SOS;
+		deviceStatus = SOS;
+
 		break;
 	}
 
@@ -226,171 +272,96 @@ bool handleDeviceStatus()
 		time2 = millis();
 		unsigned long time3 = millis();
 		statusWarining = true;
-		while (statusWarining == true)
-		{
-			if(time2 - time3 > 1000)
-			{
-				deviceStatus = antiTheft(savedLocation, currentLocation);
-				time3 = time2;
-			}
-			
-			while (readDataFromSim() == true)
-				;
-			if (time2 - time1 > DATA_UPDATE_CYCLE_DEFAUlT / 5)
-			{
-				updateData();
-				time1 = time2;
-			}
-			time2 = millis();
-			delay(10);
-		}
-		if(statusAntiTheft == true)
-		{
-			getGPS();
-			savedLocation.lat = currentLocation.lat;
-			savedLocation.lng = currentLocation.lng;
-		}
+	}
+	if (statusAntiTheft == true)
+	{
+		getGPS();
+		savedLocation.lat = currentLocation.lat;
+		savedLocation.lng = currentLocation.lng;
+	}
+	if (deviceStatus != NONE)
+	{
+		statusWarining = true;
+		updateData();
+		dataUpdateCycle = DATA_UPDATE_CYCLE_SOS;
 	}
 	return true;
 }
 
-void updateData()
-{
-	getGPS();
-	dataToSend.status = deviceStatus;
-	dataToSend.antiTheft = statusAntiTheft;
-	publishData(dataToSend.toJson(), PUB_LOCATION_TOPIC);
-}
+void handlelDataReceiver() {
+	dataForReceive = DataForReceive::fromJson(dataReceiver);
 
-bool readDataFromSim()
-{
-	String dataSubReciver = "";
-	char c;
-	std::vector<String> splittedString;
-	if (SimSerial.available() > 0 || checklengthDataReciver == 1)
+	if (statusAntiTheft != dataForReceive.antiTheft)
 	{
-
-		while (SimSerial.available() > 0)
+		statusAntiTheft = dataForReceive.antiTheft;
+		Serial.print("Status Anti Theft = ");
+		Serial.println(statusAntiTheft);
+	} else
+	{
+		if (statusWarining == true)
 		{
-			c = SimSerial.read();
-			dataSimReciver += String(c);
-		}
-		if (doneGetData == 0)
-		{
-			if ((dataSimReciver.length() - dataSimReciver.indexOf("{") - 5) < lengthDataReciver)
-			{
-				checklengthDataReciver = 0;
-				doneGetData = 1;
-				dataSubReciver = dataSimReciver.substring(dataSimReciver.indexOf("{"), dataSimReciver.indexOf("{") + lengthDataReciver);
-				Serial.println(dataSubReciver);
-				// Serial.println(dataSimReciver);
-				dataForReceive = DataForReceive::fromJson(dataSubReciver);
-				if (dataForReceive.deviceId == deviceId)
-				{
-					if (statusAntiTheft != dataForReceive.antiTheft)
-					{
-						for (int i = 0; i < 6; i++)
-						{
-							statusBuzzer = !statusBuzzer;
-							digitalWrite(BUZZER, statusBuzzer);
-							delay(300);
-						}
-						statusAntiTheft = dataForReceive.antiTheft;
-
-						// Serial.print("Status Anti Theft = ");
-						// Serial.println(statusAntiTheft);
-					}
-					if (statusAntiTheft == true)
-					{
-						getGPS();
-						savedLocation.lat = currentLocation.lat;
-						savedLocation.lng = currentLocation.lng;
-					}
-					if (dataForReceive.warning == false)
-					{
-						statusWarining = false;
-						deviceStatus = NONE;
-					}
-					dataToSend.status = deviceStatus;
-					updateData();
-					// dataSubReciver = "";
-					// dataSimReciver = "";
-				}
-				dataSubReciver = "";
-				dataSimReciver = "";
-				return true;
-			}
-		}
-		if ((dataSimReciver.indexOf("+CMQPUB: 0,\"/noibinhyen/mcd/update\"") != -1) && checklengthDataReciver == 0)
-		{
-			splittedString = splitString(dataSimReciver, ',');
-			if (splittedString.size() >= 6)
-			{
-				lengthDataReciver = splittedString[5].toInt();
-			}
-			Serial.println(dataSimReciver);
-			if ((dataSimReciver.length() - dataSimReciver.indexOf("{")) < lengthDataReciver)
-			{
-				checklengthDataReciver = 1;
-				doneGetData = 0;
-			}
-			else
-			{
-				doneGetData = 1;
-				dataSubReciver = dataSimReciver.substring(dataSimReciver.indexOf("{"), dataSimReciver.indexOf("{") + lengthDataReciver);
-				Serial.println(dataSubReciver);
-				Serial.println(dataSimReciver);
-				dataForReceive = DataForReceive::fromJson(dataSubReciver);
-				if (dataForReceive.deviceId == deviceId)
-				{
-					if (statusAntiTheft != dataForReceive.antiTheft)
-					{
-						for (int i = 0; i < 6; i++)
-						{
-							statusBuzzer = !statusBuzzer;
-							digitalWrite(BUZZER, statusBuzzer);
-							delay(300);
-						}
-						statusAntiTheft = dataForReceive.antiTheft;
-						Serial.print("Status Anti Theft = ");
-						Serial.println(statusAntiTheft);
-					}
-					if (statusAntiTheft == true)
-					{
-						getGPS();
-						//		savedLocation = currentLocation;
-						savedLocation.lat = currentLocation.lat;
-						savedLocation.lng = currentLocation.lng;
-					}
-					if (dataForReceive.warning == false)
-					{
-						statusWarining = false;
-						deviceStatus = NONE;
-					}
-
-					dataToSend.status = deviceStatus;
-					updateData();
-
-					// dataSubReciver = "";
-					// dataSimReciver = "";
-				}
-				dataSubReciver = "";
-				dataSimReciver = "";
-				return true;
-			}
-		}
-		if (checklengthDataReciver == 0)
-		{
-			Serial.println(dataSimReciver);
-			dataSimReciver = "";
+			Serial.println("Turn off warning");
+			statusWarining = false;
+			deviceStatus = NONE;
+			dataToSend.status = NONE;
+			dataUpdateCycle = DATA_UPDATE_CYCLE_DEFAUlT;
+			digitalWrite(BUZZER, HIGH);
 		}
 	}
-	return false;
+
+	if (statusAntiTheft == true)
+	{
+		getGPS();
+		savedLocation.lat = currentLocation.lat;
+		savedLocation.lng = currentLocation.lng;
+	}
+	dataToSend.status = deviceStatus;
+	dataReceiver = "";
+	updateData();
+	for (int i = 0; i < 6; i++)
+	{
+		statusBuzzer = !statusBuzzer;
+		digitalWrite(BUZZER, statusBuzzer);
+		delay(300);
+	}
+	digitalWrite(BUZZER, HIGH);
+}
+void updateData() {
+	if (countBaterry >= 100)
+	{
+		dataToSend.battery = dataToSend.battery - random(0, 2);
+		countBaterry = 0;
+	}
+
+	if (digitalRead(POWER_CONNECT_PIN) == HIGH)
+	{
+		dataToSend.isConnected = false;
+	}
+
+	else
+	{
+
+		dataToSend.isConnected = true;
+	}
+
+	dataToSend.status = deviceStatus;
+	dataToSend.antiTheft = statusAntiTheft;
+	pubDataUseWifi(dataToSend.toJson());
 }
 
-void initMQTT()
-{
+void pubDataUseWifi(String data) {
+	// char dataConvert[200];
+	// char array[data.length() + 1];
+	// data.toCharArray(array, sizeof(array));
+	// Base64.encode(dataConvert, array, data.length());
+	// client.publish(MQTT_PUB_TOPIC, dataConvert);
+	client.publish(MQTT_PUB_TOPIC, data.c_str());
+}
+
+void initMQTT() {
+#ifdef USE_SIM
 	String data;
+	delay(1000);
 	data = "AT+CMQNEW=\"" + MQTT_HOST + "\"" + ",\"" + String(MQTT_PORT) + "\",12000,1024\r\n";
 	SimSerial.print(data);
 	delay(100);
@@ -400,91 +371,129 @@ void initMQTT()
 	data = "AT+CMQSUB=0,\"" + SUB_UPDATE_TOPIC + "\",0\r\n";
 	SimSerial.print(data);
 	delay(1000);
+#endif
+#ifdef USE_WIFI
+	WiFi.begin(SSID, PASSWORD);
+	while (WiFi.status() != WL_CONNECTED)
+	{
+		delay(500);
+		Serial.print(".");
+	}
+	Serial.println("connected");
+	client.setServer("nby.ddns.net", 63001);
+	client.setCallback(callback);
+	if (client.connect("client"))
+	{
+		// client.publish(MQTT_PUB_TOPIC, "hello world");
+		client.subscribe(MQTT_SUB_TOPIC);
+	}
+#endif
 }
 
-bool checkSosAndAntiTheft(uint8_t sosPin, unsigned int timeOut)
-{
+bool
+
+checkSosAndAntiTheft(uint8_t sosPin, unsigned int timeOut) {
+	Serial.print("Sos Pin press");
+	Serial.println(digitalRead(sosPin));
 	timeOut = 2000;
-	if (digitalRead(sosPin) == HIGH) // sosPin = 1
+	if (statusWarining == true)
 	{
-		int count = 1;
-		int timePress = 3000; // 3s
-		now = millis();
-		while (1)
+		if (countPress >= 3)
 		{
-			if ((millis() - now > timePress) && (digitalRead(sosPin) == HIGH))
+			statusWarining = false;
+			deviceStatus = NONE;
+			dataToSend.status = NONE;
+			updateData();
+			dataUpdateCycle = DATA_UPDATE_CYCLE_DEFAUlT;
+			digitalWrite(BUZZER, HIGH);
+			countPress = 0;
+			delay(200);
+			updateData();
+			return true;
+		}
+	} else
+	{
+		if (countPress >= 5)
+		{
+			countPress = 0;
+			Serial.print("AntiTheft ");
+			statusAntiTheft = !statusAntiTheft;
+			Serial.println(statusAntiTheft);
+			updateData();
+			for (int i = 0; i < 6; i++)
+			{
+				statusBuzzer = !statusBuzzer;
+				digitalWrite(BUZZER, statusBuzzer);
+				delay(300);
+			}
+			digitalWrite(BUZZER, HIGH);
+			dataToSend.antiTheft = statusAntiTheft;
+			now = millis();
+			if (statusAntiTheft == true)
+			{
+				savedLocation.lat = currentLocation.lat;
+				savedLocation.lng = currentLocation.lng;
+			}
+			updateData();
+			delay(50);
+			return true;
+		}
+
+		if (digitalRead(sosPin) == HIGH) // sosPin = 1
+		{
+			now = millis();
+			// CHUA FIX
+			while (millis() - now < 3000)
+			{
+				if (digitalRead(sosPin) != HIGH)
+				{
+					return true;
+				}
+				// now = millis();
+				delay(100);
+				/* code */
+			}
+
+			if (digitalRead(sosPin) == HIGH)
 			{
 				Serial.println("SOS");
 				deviceStatus = SOS;
 				dataToSend.antiTheft = statusAntiTheft;
 				dataToSend.status = deviceStatus; // SOS
 				statusWarining = true;
+				dataUpdateCycle = DATA_UPDATE_CYCLE_SOS;
 				updateData();
 				return true;
 			}
-			while (digitalRead(sosPin) == LOW) // neu nha
-			{
-				// count++;// count = 1
-				if (millis() - now > timeOut)
-				{
-					return false;
-				}
-				if (digitalRead(sosPin) == HIGH) // neu bang 0
-				{
-					count++; // count = 2;
-					now = millis();
-					while (digitalRead(sosPin) == HIGH) // doi nha ra
-					{
-						if (millis() - now > timeOut)
-						{
-							return false;
-						}
-					}
-					if (count >= 4)
-					{
-						// duoc bam
-						updateData();
-						Serial.print("AntiTheft ");
-						statusAntiTheft = !statusAntiTheft;
-						Serial.println(statusAntiTheft);
-						for (int i = 0; i < 6; i++)
-						{
-							statusBuzzer = !statusBuzzer;
-							digitalWrite(BUZZER, statusBuzzer);
-							delay(300);
-						}
-						dataToSend.antiTheft = statusAntiTheft;
-						now = millis();
-						if (statusAntiTheft == true)
-						{
-							savedLocation.lat = currentLocation.lat;
-							savedLocation.lng = currentLocation.lng;
-						}
-						count = 1;
-						return true;
-					}
-				}
-			}
-			delay(10);
 		}
 	}
 	return true;
 }
 
-void getGPS()
-{
-	char *gpsStream = new char[100];
+void getBattery() {
+	float volValue = analogRead(BATTERY_PIN);
+	volValue = volValue * 3.3 * 6 / 4095;
+	volValue += 0.8;
+	Serial.println(volValue);
+	volValue = (volValue - 6.2) / 2 * 100;
+	if (volValue > 100)
+		volValue = 95;
+	dataToSend.battery = volValue;
+}
+void getGPS() {
+	char* gpsStream = new char[100];
 	char c;
 	const char NEED_GET_DATA_PREFIX = '$';
 	const char NEED_STOP_GET_DATA_SUFFIX = '\n';
 	bool needGetData = false;
 	int count = 0;
 	gpsStream[73] = '\0';
-	for (int i = 0; i < 7; i++)
+	for (int i = 0; i < 3; i++)
 	{
 		while (GpsSerial.available())
 		{
 			c = GpsSerial.read();
+			// Serial.print(c);
 			if (c == NEED_GET_DATA_PREFIX)
 			{
 				needGetData = true;
